@@ -9,22 +9,46 @@ SET(CMAKE_MODULE_PATH "${CMAKE_MODULE_PATH};${CMAKE_CURRENT_SOURCE_DIR}/cmake")
 
 include_directories(include)
 
+
+option(ENABLE_SM4_TBOX "Enable SM4 merged S-Box implementation" ON)
+option(ENABLE_SM4_AARCH64 "Enable SM4 AARCH64 assembly implementation" OFF)
+option(ENABLE_SM4_CTR_AESNI_AVX "Enable SM4 CTR AESNI+AVX assembly implementation" OFF)
+
+option(ENABLE_SM4_ECB "Enable SM4 ECB mode" OFF)
+option(ENABLE_SM4_OFB "Enable SM4 OFB mode" OFF)
+option(ENABLE_SM4_CFB "Enable SM4 CFB mode" OFF)
+option(ENABLE_SM4_CBC_MAC "Enable SM4-CBC-MAC" OFF)
+option(ENABLE_SM4_CCM "Enable SM4 CCM mode" OFF)
+
+option(ENABLE_ASM_UNDERSCORE_PREFIX "Add prefix `_` to assembly symbols" ON)
+option(ENABLE_GMUL_AARCH64 "Enable GF(2^128) Multiplication AArch64 assembly" OFF)
+
+
+
 set(src
 	src/version.c
 	src/debug.c
-	src/sm4_tbox.c
-	src/sm4_modes.c
+	src/sm4.c
+	src/sm4_cbc.c
+	src/sm4_ctr.c
+	src/sm4_gcm.c
 	src/sm3.c
 	src/sm3_hmac.c
 	src/sm3_kdf.c
+	src/sm3_pbkdf2.c
 	src/sm3_digest.c
-	src/sm2_alg.c
+	src/sm2_z256.c
+	src/sm2_z256_table.c
 	src/sm2_key.c
-	src/sm2_lib.c
-	src/sm2_ctx.c
-	src/sm9_alg.c
+	src/sm2_sign.c
+	src/sm2_enc.c
+	src/sm2_exch.c
+	src/sm9_z256.c
+	src/sm9_z256_table.c
 	src/sm9_key.c
-	src/sm9_lib.c
+	src/sm9_sign.c
+	src/sm9_enc.c
+	src/sm9_exch.c
 	src/zuc.c
 	src/zuc_modes.c
 	src/hash_drbg.c
@@ -32,10 +56,10 @@ set(src
 	src/digest.c
 	src/hmac.c
 	src/hkdf.c
-	src/pbkdf2.c
 	src/gf128.c
-	src/gcm.c
-	src/aead.c
+	src/ghash.c
+	src/sm4_cbc_sm3_hmac.c
+	src/sm4_ctr_sm3_hmac.c
 	src/pkcs8.c
 	src/ec.c
 	src/rsa.c
@@ -50,17 +74,6 @@ set(src
 	src/x509_crl.c
 	src/x509_new.c
 	src/cms.c
-	src/sdf/sdf.c
-	src/sdf/sdf_lib.c
-	src/sdf/sdf_meth.c
-	src/sdf/sdf_ext.c
-	src/sdf/sdf_sansec.c
-	src/skf/skf.c
-	src/skf/skf_lib.c
-	src/skf/skf_meth.c
-	src/skf/skf_ext.c
-	src/skf/skf_prn.c
-	src/skf/skf_wisec.c
 	src/socket.c
 	src/tls.c
 	src/tls_ext.c
@@ -108,8 +121,6 @@ set(tools
 	tools/cmsencrypt.c
 	tools/cmsdecrypt.c
 	tools/cmsparse.c
-	tools/sdfutil.c
-	tools/skfutil.c
 	tools/tlcp_client.c
 	tools/tlcp_server.c
 	tools/tls12_client.c
@@ -121,7 +132,11 @@ set(tools
 set(tests
 	sm4
 	sm3
-	sm2
+	sm4_sm3_hmac
+	sm2_z256
+	sm2_key
+	sm2_sign
+	sm2_enc
 	sm9
 	zuc
 	hash_drbg
@@ -129,10 +144,8 @@ set(tests
 	digest
 	hmac
 	hkdf
-	pbkdf2
 	gf128
-	gcm
-	aead
+	ghash
 	pkcs8
 	ec
 	asn1
@@ -234,6 +247,39 @@ if (ENABLE_SM2_ALGOR_ID_ENCODE_NULL)
 	add_definitions(-DENABLE_SM2_ALGOR_ID_ENCODE_NULL)
 endif()
 
+if (ENABLE_ASM_UNDERSCORE_PREFIX)
+	message(STATUS "ENABLE_ASM_UNDERSCORE_PREFIX is ON")
+	add_definitions(-DENABLE_ASM_UNDERSCORE_PREFIX)
+endif()
+
+if (ENABLE_GMUL_AARCH64)
+	message(STATUS "ENABLE_GMUL_AARCH64 is ON")
+	add_definitions(-DENABLE_GMUL_AARCH64)
+	enable_language(ASM)
+	list(APPEND src src/gf128_aarch64.S)
+endif()
+
+option(ENABLE_SM2_Z256_ARMV8 "Enable SM2_Z256 ARMv8 assembly" OFF)
+if (ENABLE_SM2_Z256_ARMV8)
+	message(STATUS "ENABLE_SM2_Z256_ARMV8 is ON")
+	add_definitions(-DENABLE_SM2_Z256_ARMV8)
+	enable_language(ASM)
+	list(APPEND src src/sm2_z256_armv8.S)
+endif()
+
+option(ENABLE_SM9_Z256_ARMV8 "Enable SM9_Z256 ARMv8 assembly" OFF)
+if (ENABLE_SM9_Z256_ARMV8)
+	message(STATUS "ENABLE_SM9_Z256_ARMV8 is ON")
+	add_definitions(-DENABLE_SM9_Z256_ARMV8)
+	enable_language(ASM)
+	list(APPEND src src/sm9_z256_armv8.S)
+endif()
+
+option(ENABLE_SM9_NEON "Enable SM9 NEON intrinsics" OFF)
+if (ENABLE_SM9_NEON)
+	message(STATUS "ENABLE_SM9_NEON is ON")
+	add_definitions(-DENABLE_SM9_NEON)
+endif()
 
 option(ENABLE_SM2_PRIVATE_KEY_EXPORT "Enable export un-encrypted SM2 private key" OFF)
 if (ENABLE_SM2_PRIVATE_KEY_EXPORT)
@@ -250,22 +296,76 @@ if (ENABLE_TLS_DEBUG)
 endif()
 
 
-#option(ENABLE_SM3_AVX_BMI2 "Enable SM3 AVX+BMI2 assembly implementation" OFF)
-#if (ENABLE_SM3_AVX_BMI2)
-#	message(STATUS "ENABLE_SM3_AVX_BMI2 is ON")
-#	add_definitions(-DENABLE_SM3_AVX_BMI2)
-#	enable_language(ASM)
-#	list(APPEND src src/sm3_avx_bmi2.s)
-#endif()
+option(ENABLE_SM3_SSE "Enable SM3 SSE assembly implementation" OFF)
+if (ENABLE_SM3_SSE)
+	message(STATUS "ENABLE_SM3_SSE is ON")
+	list(FIND src src/sm3.c sm3_index)
+	list(REMOVE_AT src ${sm3_index})
+	list(INSERT src ${sm3_index} src/sm3_sse.c)
+endif()
 
 
-option(ENABLE_SM4_AESNI_AVX "Enable SM4 AESNI+AVX assembly implementation" OFF)
-if (ENABLE_SM4_AESNI_AVX)
-	message(STATUS "ENABLE_SM4_AESNI_AVX is ON")
-	add_definitions(-DENABLE_SM4_AESNI_AVX)
-	list(APPEND src src/sm4_aesni_avx.c)
-	list(APPEND tests sm4_aesni_avx)
+if (ENABLE_SM4_AARCH64)
+	message(STATUS "ENABLE_SM4_AARCH64 is ON")
+	list(FIND src src/sm4.c sm4_index)
+	list(REMOVE_AT src ${sm4_index})
+	list(INSERT src ${sm4_index} src/sm4_aarch64.S)
+	enable_language(ASM)
+endif()
+
+if (ENABLE_SM4_CTR_AESNI_AVX)
+	message(STATUS "ENABLE_SM4_CTR_AESNI_AVX is ON")
+	list(FIND src src/sm4_ctr.c sm4_ctr_index)
+	list(REMOVE_AT src ${sm4_ctr_index})
+	list(INSERT src ${sm4_ctr_index} src/sm4_ctr_aesni_avx.c)
 	set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -march=native")
+endif()
+
+if (ENABLE_SM4_CL)
+	message(STATUS "ENABLE_SM4_CL is ON")
+	if (CMAKE_SYSTEM_NAME STREQUAL "Darwin")
+		add_definitions(-DMACOS) # to include <OpenCL/OpenCL.h>
+	endif()
+	list(APPEND src src/sm4_cl.c)
+	list(APPEND tests sm4_cl)
+endif()
+
+if (ENABLE_SM4_ECB)
+	message(STATUS "ENABLE_SM4_ECB is ON")
+	add_definitions(-DENABLE_SM4_ECB)
+	list(APPEND src src/sm4_ecb.c)
+	list(APPEND tests sm4_ecb)
+endif()
+
+if (ENABLE_SM4_OFB)
+	message(STATUS "ENABLE_SM4_OFB is ON")
+	add_definitions(-DENABLE_SM4_OFB)
+	list(APPEND src src/sm4_ofb.c)
+	list(APPEND tests sm4_ofb)
+endif()
+
+if (ENABLE_SM4_CFB)
+	message(STATUS "ENABLE_SM4_CFB is ON")
+	add_definitions(-DENABLE_SM4_CFB)
+	list(APPEND src src/sm4_cfb.c)
+	list(APPEND tests sm4_cfb)
+endif()
+
+
+if (ENABLE_SM4_CCM)
+	message(STATUS "ENABLE_SM4_CCM is ON")
+	set(ENABLE_SM4_CBC_MAC ON)
+	add_definitions(-DENABLE_SM4_CCM)
+	list(APPEND src src/sm4_ccm.c)
+	list(APPEND tests sm4_ccm)
+endif()
+
+option(ENABLE_SM4_XTS "Enable SM4 XTS mode" OFF)
+if (ENABLE_SM4_XTS)
+	message(STATUS "ENABLE_SM4_XTS is ON")
+	add_definitions(-DENABLE_SM4_XTS)
+	list(APPEND src src/sm4_xts.c)
+	list(APPEND tests sm4_xts)
 endif()
 
 
@@ -365,7 +465,6 @@ if (ENABLE_INTEL_RDRAND)
 endif()
 
 
-option(ENABLE_SM4_CBC_MAC "Enable SM4-CBC-MAC" OFF)
 if (ENABLE_SM4_CBC_MAC)
 	message(STATUS "ENABLE_SM4_CBC_MAC is ON")
 	list(APPEND src src/sm4_cbc_mac.c)
@@ -384,6 +483,7 @@ endif()
 
 check_symbol_exists(getentropy "unistd.h" HAVE_GETENTROPY)
 if (WIN32)
+	add_definitions(-D_WINSOCK_DEPRECATED_NO_WARNINGS)
 	list(APPEND src src/rand_win.c src/http_win.c)
 elseif (APPLE)
 	list(APPEND src src/rand_apple.c src/http.c)
@@ -418,13 +518,21 @@ add_library(gmssl ${src})
 if (WIN32)
 	target_link_libraries(gmssl -lws2_32)
 elseif (APPLE)
-	target_link_libraries(gmssl dl)
+	if (ENABLE_SDF)
+		target_link_libraries(gmssl dl)
+	endif()
 	target_link_libraries(gmssl "-framework Security")
+	if (ENABLE_SM4_CL)
+		# FIXME: different rules for cl and OpenCL framework
+		target_link_libraries(gmssl "-framework OpenCL")
+	endif()
 	#target_link_libraries(gmssl "-framework CoreFoundation") # rand_apple.c CFRelease()
 elseif (MINGW)
 	target_link_libraries(gmssl PRIVATE wsock32)
 else()
-	target_link_libraries(gmssl dl)
+	if (ENABLE_SDF)
+		target_link_libraries(gmssl dl)
+	endif()
 endif()
 
 
@@ -437,9 +545,41 @@ install(TARGETS gmssl ARCHIVE DESTINATION lib LIBRARY DESTINATION lib RUNTIME DE
 install(DIRECTORY ${CMAKE_SOURCE_DIR}/include/gmssl DESTINATION include)
 
 
+option(ENABLE_SDF "Enable SDF module" OFF)
+if (ENABLE_SDF)
+	message(STATUS "ENABLE_SDF is ON")
+	list(APPEND src
+		src/sdf/sdf.c
+		src/sdf/sdf_lib.c
+		src/sdf/sdf_meth.c
+		src/sdf/sdf_ext.c
+		src/sdf/sdf_sansec.c)
+	list(APPEND tools tools/sdfutil.c)
+	add_library(sdf_dummy SHARED src/sdf/sdf_dummy.c)
+	set_target_properties(sdf_dummy PROPERTIES VERSION 3.1 SOVERSION 3)
+endif()
+
+
+option(ENABLE_SKF "Enable SKF module" OFF)
+if (ENABLE_SKF)
+	message(STATUS "ENABLE_SKF is ON")
+	list(APPEND src
+		src/skf/skf.c
+		src/skf/skf_lib.c
+		src/skf/skf_meth.c
+		src/skf/skf_ext.c
+		src/skf/skf_prn.c
+		src/skf/skf_wisec.c)
+	list(APPEND tools tools/skfutil.c)
+	add_library(skf_dummy SHARED src/skf/skf_dummy.c)
+	set_target_properties(skf_dummy PROPERTIES VERSION 3.1 SOVERSION 3)
+endif()
+
+
 option(ENABLE_SOFT_SDF "Enable Software SDF Implementation" OFF)
 if (ENABLE_SOFT_SDF)
 	message(STATUS "ENABLE_SOFT_SDF is ON")
+	list(APPEND tests soft_sdf)
 	add_library(soft_sdf SHARED src/sdf/soft_sdf.c)
 	target_link_libraries(soft_sdf PRIVATE gmssl)
 	set_target_properties(soft_sdf PROPERTIES VERSION 3.1 SOVERSION 3)
@@ -447,13 +587,6 @@ endif()
 
 
 if (NOT ${CMAKE_SYSTEM_NAME} STREQUAL "iOS")
-
-	add_library(sdf_dummy SHARED src/sdf/sdf_dummy.c)
-	set_target_properties(sdf_dummy PROPERTIES VERSION 3.1 SOVERSION 3)
-
-	add_library(skf_dummy SHARED src/skf/skf_dummy.c)
-	set_target_properties(skf_dummy PROPERTIES VERSION 3.1 SOVERSION 3)
-
 	add_executable(gmssl-bin ${tools})
 	target_link_libraries(gmssl-bin LINK_PUBLIC gmssl)
 	set_target_properties(gmssl-bin PROPERTIES RUNTIME_OUTPUT_NAME gmssl)
@@ -512,4 +645,3 @@ string(CONCAT CPACK_PACKAGE_DESCRIPTION_SUMMARY
 set(CPACK_RESOURCE_FILE_LICENSE "${PROJECT_SOURCE_DIR}/LICENSE")
 set(CPACK_NSIS_MODIFY_PATH ON)
 include(CPack)
-

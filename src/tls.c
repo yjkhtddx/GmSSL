@@ -1,5 +1,5 @@
 ﻿/*
- *  Copyright 2014-2022 The GmSSL Project. All Rights Reserved.
+ *  Copyright 2014-2024 The GmSSL Project. All Rights Reserved.
  *
  *  Licensed under the Apache License, Version 2.0 (the License); you may
  *  not use this file except in compliance with the License.
@@ -11,6 +11,7 @@
 
 #include <time.h>
 #include <stdio.h>
+#include <fcntl.h>
 #include <assert.h>
 #include <stdlib.h>
 #include <string.h>
@@ -536,7 +537,7 @@ int tls_cert_type_from_oid(int oid)
 // 这两个函数没有对应的TLCP版本
 int tls_sign_server_ecdh_params(const SM2_KEY *server_sign_key,
 	const uint8_t client_random[32], const uint8_t server_random[32],
-	int curve, const SM2_POINT *point, uint8_t *sig, size_t *siglen)
+	int curve, const SM2_Z256_POINT *point, uint8_t *sig, size_t *siglen)
 {
 	uint8_t server_ecdh_params[69];
 	SM2_SIGN_CTX sign_ctx;
@@ -550,7 +551,7 @@ int tls_sign_server_ecdh_params(const SM2_KEY *server_sign_key,
 	server_ecdh_params[1] = (uint8_t)(curve >> 8);
 	server_ecdh_params[2] = (uint8_t)curve;
 	server_ecdh_params[3] = 65;
-	sm2_point_to_uncompressed_octets(point, server_ecdh_params + 4);
+	sm2_z256_point_to_uncompressed_octets(point, server_ecdh_params + 4);
 
 	sm2_sign_init(&sign_ctx, server_sign_key, SM2_DEFAULT_ID, SM2_DEFAULT_ID_LENGTH);
 	sm2_sign_update(&sign_ctx, client_random, 32);
@@ -563,7 +564,7 @@ int tls_sign_server_ecdh_params(const SM2_KEY *server_sign_key,
 
 int tls_verify_server_ecdh_params(const SM2_KEY *server_sign_key,
 	const uint8_t client_random[32], const uint8_t server_random[32],
-	int curve, const SM2_POINT *point, const uint8_t *sig, size_t siglen)
+	int curve, const SM2_Z256_POINT *point, const uint8_t *sig, size_t siglen)
 {
 	int ret;
 	uint8_t server_ecdh_params[69];
@@ -579,7 +580,7 @@ int tls_verify_server_ecdh_params(const SM2_KEY *server_sign_key,
 	server_ecdh_params[1] = (uint8_t)(curve >> 8);
 	server_ecdh_params[2] = (uint8_t)(curve);
 	server_ecdh_params[3] = 65;
-	sm2_point_to_uncompressed_octets(point, server_ecdh_params + 4);
+	sm2_z256_point_to_uncompressed_octets(point, server_ecdh_params + 4);
 
 	sm2_verify_init(&verify_ctx, server_sign_key, SM2_DEFAULT_ID, SM2_DEFAULT_ID_LENGTH);
 	sm2_verify_update(&verify_ctx, client_random, 32);
@@ -1332,6 +1333,8 @@ int tls_record_set_alert(uint8_t *record, size_t *recordlen,
 		return -1;
 	}
 	record[0] = TLS_record_alert;
+	//record[1] = protocol.major should be set by others
+	//record[2] = protocol.minor should be set by others
 	record[3] = 0; // length
 	record[4] = 2; // length
 	record[5] = (uint8_t)alert_level;
@@ -1452,7 +1455,7 @@ int tls_cipher_suite_in_list(int cipher, const int *list, size_t list_count)
 
 int tls_record_send(const uint8_t *record, size_t recordlen, tls_socket_t sock)
 {
-	tls_ret_t r;
+	tls_ret_t n;
 
 	if (!record) {
 		error_print();
@@ -1466,36 +1469,58 @@ int tls_record_send(const uint8_t *record, size_t recordlen, tls_socket_t sock)
 		error_print();
 		return -1;
 	}
-	if ((r = tls_socket_send(sock, record, recordlen, 0)) < 0) {
-		perror("tls_record_send");
-		error_print();
-		return -1;
-	} else if (r != recordlen) {
-		error_print();
-		return -1;
+
+	while (recordlen) {
+		if ((n = tls_socket_send(sock, record, recordlen, 0)) > 0) {
+			record += n;
+			recordlen -= n;
+
+		} else if (n == 0) {
+			if (errno == EAGAIN || errno == EWOULDBLOCK) {
+				tls_socket_wait();
+			} else {
+				error_puts("TCP connection closed");
+				return 0;
+			}
+		} else {
+			if (errno == EAGAIN || errno == EWOULDBLOCK) {
+				tls_socket_wait();
+			} else {
+				error_print();
+				return -1;
+			}
+		}
 	}
 	return 1;
 }
 
-int tls_record_do_recv(uint8_t *record, size_t *recordlen, tls_socket_t sock)
+int tls_record_recv(uint8_t *record, size_t *recordlen, tls_socket_t sock)
 {
-	tls_ret_t r;
+	uint8_t *p = record;
 	size_t len;
+	tls_ret_t n;
 
 	len = 5;
 	while (len) {
-		if ((r = tls_socket_recv(sock, record + 5 - len, len, 0)) < 0) {
-			perror("tls_record_do_recv");
-			error_print();
-			return -1;
-		}
-		if (r == 0) {
-			perror("tls_record_do_recv");
-			error_print();
+		if ((n = tls_socket_recv(sock, p, len, 0)) > 0) {
+			p += n;
+			len -= n;
+		} else if (n == 0) {
+			tls_trace("TCP connection closed");
+			*recordlen = 0;
 			return 0;
+		} else {
+			if (errno == EAGAIN || errno == EWOULDBLOCK) {
+				if (len == 5) {
+					return -EAGAIN;
+				}
+				tls_socket_wait();
+			} else {
+				perror("recv");
+				error_print();
+				return -1;
+			}
 		}
-
-		len -= r;
 	}
 	if (!tls_record_type_name(tls_record_type(record))) {
 		error_print();
@@ -1505,60 +1530,34 @@ int tls_record_do_recv(uint8_t *record, size_t *recordlen, tls_socket_t sock)
 		error_print();
 		return -1;
 	}
+
 	len = (size_t)record[3] << 8 | record[4];
+
 	*recordlen = 5 + len;
 	if (*recordlen > TLS_MAX_RECORD_SIZE) {
-		// 这里只检查是否超过最大长度，握手协议的长度检查由上层协议完成
 		error_print();
 		return -1;
 	}
+
 	while (len) {
-		if ((r = recv(sock, record + *recordlen - len, (int)len, 0)) < 0) { // winsock2 recv() use int
-			perror("tls_record_do_recv");
-			error_print();
-			return -1;
+		if ((n = tls_socket_recv(sock, p, len, 0)) > 0) {
+			p += n;
+			len -= n;
+		} else if (n == 0) {
+			tls_trace("connection closed");
+			*recordlen = 0;
+			return 0;
+		} else {
+			if (errno == EAGAIN || errno == EWOULDBLOCK) {
+				tls_socket_wait();
+			} else {
+				perror("recv");
+				error_print();
+				return -1;
+			}
 		}
-		len -= r;
 	}
-	return 1;
-}
 
-int tls_record_recv(uint8_t *record, size_t *recordlen, tls_socket_t sock)
-{
-retry:
-	if (tls_record_do_recv(record, recordlen, sock) != 1) {
-		error_print();
-		return -1;
-	}
-
-	if (tls_record_type(record) == TLS_record_alert) {
-		int level;
-		int alert;
-		if (tls_record_get_alert(record, &level, &alert) != 1) {
-			error_print();
-			return -1;
-		}
-		tls_record_trace(stderr, record, *recordlen, 0, 0);
-		if (level == TLS_alert_level_warning) {
-			// 忽略Warning，读取下一个记录
-			error_puts("Warning record received!\n");
-			goto retry;
-		}
-		if (alert == TLS_alert_close_notify) {
-			// close_notify是唯一需要提供反馈的Fatal Alert，其他直接中止连接
-			uint8_t alert_record[TLS_ALERT_RECORD_SIZE];
-			size_t alert_record_len;
-			tls_record_set_type(alert_record, TLS_record_alert);
-			tls_record_set_protocol(alert_record, tls_record_protocol(record));
-			tls_record_set_alert(alert_record, &alert_record_len, TLS_alert_level_fatal, TLS_alert_close_notify);
-
-			tls_trace("send Alert close_notifiy\n");
-			tls_record_trace(stderr, alert_record, alert_record_len, 0, 0);
-			tls_record_send(alert_record, alert_record_len, sock);
-		}
-		// 返回错误0通知调用方不再做任何处理（无需再发送Alert）
-		return 0;
-	}
 	return 1;
 }
 
@@ -1569,7 +1568,7 @@ int tls_seq_num_incr(uint8_t seq_num[8])
 		seq_num[i]++;
 		if (seq_num[i]) break;
 	}
-	// FIXME: 检查溢出
+	// FIXME: check overflow
 	return 1;
 }
 
@@ -1597,6 +1596,7 @@ int tls_send_alert(TLS_CONNECT *conn, int alert)
 		error_print();
 		return -1;
 	}
+
 	tls_record_set_protocol(record, conn->protocol == TLS_protocol_tls13 ? TLS_protocol_tls12 : conn->protocol);
 	tls_record_set_alert(record, &recordlen, TLS_alert_level_fatal, alert);
 
@@ -1611,17 +1611,26 @@ int tls_send_alert(TLS_CONNECT *conn, int alert)
 int tls_alert_level(int alert)
 {
 	switch (alert) {
-	case TLS_alert_bad_certificate:
-	case TLS_alert_unsupported_certificate:
-	case TLS_alert_certificate_revoked:
-	case TLS_alert_certificate_expired:
-	case TLS_alert_certificate_unknown:
-		return 0;
+	case TLS_alert_unexpected_message:
+	case TLS_alert_bad_record_mac:
+	case TLS_alert_record_overflow:
+	case TLS_alert_decompression_failure:
+	case TLS_alert_handshake_failure:
+	case TLS_alert_illegal_parameter:
+	case TLS_alert_unknown_ca:
+	case TLS_alert_access_denied:
+	case TLS_alert_decode_error:
+	case TLS_alert_decrypt_error:
+	case TLS_alert_protocol_version:
+	case TLS_alert_insufficient_security:
+	case TLS_alert_internal_error:
+	case TLS_alert_unsupported_extension:
+		return TLS_alert_level_fatal;
 	case TLS_alert_user_canceled:
 	case TLS_alert_no_renegotiation:
-		return TLS_alert_level_warning;	
+		return TLS_alert_level_warning;
 	}
-	return TLS_alert_level_fatal;	
+	return TLS_alert_level_undefined;
 }
 
 int tls_send_warning(TLS_CONNECT *conn, int alert)
@@ -1648,13 +1657,12 @@ int tls_send_warning(TLS_CONNECT *conn, int alert)
 	return 1;
 }
 
-int tls_send(TLS_CONNECT *conn, const uint8_t *in, size_t inlen, size_t *sentlen)
+static int tls_encrypt_send(TLS_CONNECT *conn, int record_type, const uint8_t *in, size_t inlen, size_t *sentlen)
 {
 	const SM3_HMAC_CTX *hmac_ctx;
 	const SM4_KEY *enc_key;
 	uint8_t *seq_num;
-	uint8_t *record;
-	size_t datalen;
+	size_t recordlen;
 
 	if (!conn) {
 		error_print();
@@ -1669,6 +1677,11 @@ int tls_send(TLS_CONNECT *conn, const uint8_t *in, size_t inlen, size_t *sentlen
 		inlen = TLS_MAX_PLAINTEXT_SIZE;
 	}
 
+	if (conn->datalen) {
+		error_puts("recv all buffered data before send");
+		return -1;
+	}
+
 	if (conn->is_client) {
 		hmac_ctx = &conn->client_write_mac_ctx;
 		enc_key = &conn->client_write_enc_key;
@@ -1678,37 +1691,34 @@ int tls_send(TLS_CONNECT *conn, const uint8_t *in, size_t inlen, size_t *sentlen
 		enc_key = &conn->server_write_enc_key;
 		seq_num = conn->server_seq_num;
 	}
-	record = conn->record;
 
-	tls_trace("send ApplicationData\n");
-
-	if (tls_record_set_type(record, TLS_record_application_data) != 1
-		|| tls_record_set_protocol(record, conn->protocol) != 1
-		|| tls_record_set_length(record, inlen) != 1) {
+	if (tls_record_set_type(conn->databuf, record_type) != 1
+		|| tls_record_set_protocol(conn->databuf, conn->protocol) != 1
+		|| tls_record_set_data(conn->databuf, in, inlen) != 1) {
 		error_print();
 		return -1;
 	}
+	tls_record_trace(stderr, conn->databuf, tls_record_length(conn->databuf), 0, 0);
 
-	if (tls_cbc_encrypt(hmac_ctx, enc_key, seq_num, tls_record_header(record),
-		in, inlen, tls_record_data(record), &datalen) != 1) {
-		error_print();
-		return -1;
-	}
-	if (tls_record_set_length(record, datalen) != 1) {
+	if (tls_record_encrypt(hmac_ctx, enc_key, seq_num,
+		conn->databuf, tls_record_length(conn->databuf),
+		conn->record, &recordlen) != 1) {
 		error_print();
 		return -1;
 	}
 	tls_seq_num_incr(seq_num);
-	if (tls_record_send(record, tls_record_length(record), conn->sock) != 1) {
+
+	if (tls_record_send(conn->record, recordlen, conn->sock) != 1) {
 		error_print();
 		return -1;
 	}
+	tls_encrypted_record_trace(stderr, conn->record, recordlen, 0, 0);
+
 	*sentlen = inlen;
-	tls_record_trace(stderr, record, tls_record_length(record), 0, 0);
 	return 1;
 }
 
-int tls_do_recv(TLS_CONNECT *conn)
+int tls_decrypt_recv(TLS_CONNECT *conn)
 {
 	int ret;
 	const SM3_HMAC_CTX *hmac_ctx;
@@ -1728,26 +1738,33 @@ int tls_do_recv(TLS_CONNECT *conn)
 		seq_num = conn->client_seq_num;
 	}
 
-	tls_trace("recv ApplicationData\n");
+	tls_trace("recv Encrypted Record\n");
 	if ((ret = tls_record_recv(record, &recordlen, conn->sock)) != 1) {
-		if (ret < 0) error_print();
+		if (ret < 0 && ret != -EAGAIN) error_print();
 		return ret;
 	}
+	tls_encrypted_record_trace(stderr, record, recordlen, 0, 0);
 
-	tls_record_trace(stderr, record, recordlen, 0, 0);
-	if (tls_cbc_decrypt(hmac_ctx, dec_key, seq_num, record,
-		tls_record_data(record), tls_record_data_length(record),
+	if (tls_record_decrypt(hmac_ctx, dec_key, seq_num,
+		record, recordlen,
 		conn->databuf, &conn->datalen) != 1) {
 		error_print();
 		return -1;
 	}
-	conn->data = conn->databuf;
 	tls_seq_num_incr(seq_num);
 
-	tls_record_set_data(record, conn->data, conn->datalen);
-	tls_trace("decrypt ApplicationData\n");
-	tls_record_trace(stderr, record, tls_record_length(record), 0, 0);
+	conn->data = tls_record_data(conn->databuf);
+	conn->datalen = tls_record_data_length(conn->databuf);
+
+	tls_record_trace(stderr, conn->databuf, tls_record_length(conn->databuf), 0, 0);
+
 	return 1;
+}
+
+int tls_send(TLS_CONNECT *conn, const uint8_t *in, size_t inlen, size_t *sentlen)
+{
+	tls_trace("send ApplicationData\n");
+	return tls_encrypt_send(conn, TLS_record_application_data, in, inlen, sentlen);
 }
 
 int tls_recv(TLS_CONNECT *conn, uint8_t *out, size_t outlen, size_t *recvlen)
@@ -1756,39 +1773,75 @@ int tls_recv(TLS_CONNECT *conn, uint8_t *out, size_t outlen, size_t *recvlen)
 		error_print();
 		return -1;
 	}
+
 	if (conn->datalen == 0) {
 		int ret;
-		if ((ret = tls_do_recv(conn)) != 1) {
-			if (ret) error_print();
+		if ((ret = tls_decrypt_recv(conn)) != 1) {
+			if (ret < 0 && ret != -EAGAIN) error_print();
 			return ret;
 		}
+
+		switch (tls_record_type(conn->record)) {
+		case TLS_record_application_data:
+			break;
+		case TLS_record_change_cipher_spec:
+			error_print();
+			return -1;
+		case TLS_record_alert:
+			{
+			// should call tls_process_alert()
+			int level;
+			int alert;
+			tls_record_get_alert(conn->databuf, &level, &alert);
+			if (alert == TLS_alert_close_notify) {
+				tls_trace("recv Alert.close_notify\n");
+				return 0;
+			}
+			tls_trace("alert received\n");
+			return -1;
+			}
+		default:
+			error_print();
+			return -1;
+		}
 	}
+
 	*recvlen = outlen <= conn->datalen ? outlen : conn->datalen;
 	memcpy(out, conn->data, *recvlen);
 	conn->data += *recvlen;
 	conn->datalen -= *recvlen;
+
 	return 1;
 }
 
 int tls_shutdown(TLS_CONNECT *conn)
 {
+	int ret;
 	size_t recordlen;
+	uint8_t alert[2];
+	alert[0] = TLS_alert_level_fatal;
+	alert[1] = TLS_alert_close_notify;
+
 	if (!conn) {
 		error_print();
 		return -1;
 	}
-	tls_trace("send Alert close_notify\n");
-	if (tls_send_alert(conn, TLS_alert_close_notify) != 1) {
-		error_print();
-		return -1;
-	}
-	tls_trace("recv Alert close_notify\n");
 
-	if (tls_record_do_recv(conn->record, &recordlen, conn->sock) != 1) {
+	tls_trace("send Alert.close_notify\n");
+
+	if (tls_encrypt_send(conn, TLS_record_alert, alert, sizeof(alert), &recordlen) != 1) {
 		error_print();
 		return -1;
 	}
-	tls_record_trace(stderr, conn->record, recordlen, 0, 0);
+
+	tls_trace("recv Alert.close_notify\n");
+
+	if ((ret = tls_decrypt_recv(conn)) != 1) {
+		if (ret == 0) tls_trace("Connection closed by remote without close_notify\n");
+		else if (ret == -EAGAIN) tls_trace("-EAGAIN\n");
+		else error_print();
+		return -1;
+	}
 
 	return 1;
 }
@@ -2254,6 +2307,8 @@ int tls_init(TLS_CONNECT *conn, const TLS_CTX *ctx)
 	conn->sign_key = ctx->signkey;
 	conn->kenc_key = ctx->kenckey;
 
+	conn->quiet = ctx->quiet;
+
 	return 1;
 }
 
@@ -2264,21 +2319,18 @@ void tls_cleanup(TLS_CONNECT *conn)
 
 int tls_set_socket(TLS_CONNECT *conn, tls_socket_t sock)
 {
-#if 0
-	int opts;
+	int flags;
 
-	// FIXME: do we still need this? when using select?
-	if ((opts = fcntl(sock, F_GETFL)) < 0) {
+	if ((flags = fcntl(sock, F_GETFL)) == -1) {
 		error_print();
-		perror("tls_set_socket");
+		perror("fcntl error");
 		return -1;
 	}
-	opts &= ~O_NONBLOCK;
-	if (fcntl(sock, F_SETFL, opts) < 0) {
-		error_print();
-		return -1;
+	if (flags & O_NONBLOCK) {
+		error_puts("socket in non-blocking mode");
+		//nginx will pass a socket in non-blocking mode
+		//return -1;
 	}
-#endif
 	conn->sock = sock;
 	return 1;
 }

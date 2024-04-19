@@ -1,5 +1,5 @@
 ﻿/*
- *  Copyright 2014-2022 The GmSSL Project. All Rights Reserved.
+ *  Copyright 2014-2024 The GmSSL Project. All Rights Reserved.
  *
  *  Licensed under the Apache License, Version 2.0 (the License); you may
  *  not use this file except in compliance with the License.
@@ -11,7 +11,6 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-//#include <unistd.h>			
 #include <time.h>
 #include <gmssl/tls.h>
 #include <gmssl/x509.h>
@@ -271,9 +270,7 @@ const char *tls_curve_type_name(int type)
 	return NULL;
 }
 
-
-// FIXME: 是否应该将函数名改为 tls_curve_name() 这样和 TLS_curve_xxx 保持一致
-const char *tls_named_curve_name(int curve)
+const char *tls_curve_name(int curve)
 {
 	switch (curve) {
 	case TLS_curve_secp256k1: return "secp256k1";
@@ -347,7 +344,23 @@ int tls_pre_master_secret_print(FILE *fp, const uint8_t pre_master_secret[48], i
 	return 1;
 }
 
-// supported_versions 的格式还受到 handshake_type 影响
+/*
+ * SupportedVersions Extension (only defined in TLS 1.3)
+ *
+ * In ClientHello:
+ *	struct {
+ *		ProtocolVersion versions<2..254>;
+ *	} SupportedVersions;
+ *
+ * In ServerHello:
+ *	struct {
+ *		ProtocolVersion selected_version;
+ *	} SupportedVersions;
+ *
+
+这个函数需要一个参数表示扩展是在ClientHello还是在ServerHello中
+
+ */
 int tls_extension_print(FILE *fp, int type, const uint8_t *data, size_t datalen, int format, int indent)
 {
 	const uint8_t *p;
@@ -357,6 +370,7 @@ int tls_extension_print(FILE *fp, int type, const uint8_t *data, size_t datalen,
 	indent += 4;
 
 	switch (type) {
+	// FIXME: 不支持ServerHello
 	case TLS_extension_supported_versions:
 		if (tls_uint16array_from_bytes(&p, &len, &data, &datalen) != 1
 			|| tls_length_is_zero(datalen) != 1
@@ -382,7 +396,7 @@ int tls_extension_print(FILE *fp, int type, const uint8_t *data, size_t datalen,
 			uint16_t curve;
 			tls_uint16_from_bytes(&curve, &p, &len);
 			format_print(fp, format, indent, "%s (%d)\n",
-				tls_named_curve_name(curve), curve);
+				tls_curve_name(curve), curve);
 		}
 		break;
 	case TLS_extension_ec_point_formats:
@@ -428,7 +442,7 @@ int tls_extension_print(FILE *fp, int type, const uint8_t *data, size_t datalen,
 				error_print();
 				return -1;
 			}
-			format_print(fp, format, indent, "group: %s (%d)\n", tls_named_curve_name(group), group);
+			format_print(fp, format, indent, "group: %s (%d)\n", tls_curve_name(group), group);
 			format_bytes(fp, format, indent, "key_exchange", key_exch, key_exch_len);
 		}
 		break;
@@ -669,7 +683,7 @@ int tls_server_key_exchange_ecdhe_print(FILE *fp, const uint8_t *data, size_t da
 		return -1;
 	}
 	format_print(fp, format, indent + 8, "named_curve: %s (%d)\n",
-		tls_named_curve_name(curve), curve);
+		tls_curve_name(curve), curve);
 	if (tls_uint8array_from_bytes(&octets, &octetslen, &data, &datalen) != 1) {
 		error_print();
 		return -1;
@@ -849,6 +863,7 @@ int tls_finished_print(FILE *fp, const uint8_t *data, size_t datalen, int format
 	return 1;
 }
 
+// FIXME: 应该将这个函数融合到 tls_handshake_print 中
 int tls13_handshake_print(FILE *fp, int fmt, int ind, const uint8_t *handshake, size_t handshake_len)
 {
 	const uint8_t *p = handshake;
@@ -1055,6 +1070,7 @@ int tls13_record_print(FILE *fp, int format, int indent, const uint8_t *record, 
 
 }
 
+// FIXME: 根据RFC来考虑这个函数的参数,从底向上逐步修改每个函数的接口参数
 
 // 仅从record数据是不能判断这个record是TLS 1.2还是TLS 1.3
 // 不同协议上，同名的握手消息，其格式也是不一样的。这真是太恶心了！！！！
@@ -1087,13 +1103,6 @@ int tls_record_print(FILE *fp, const uint8_t *record,  size_t recordlen, int for
 	if (recordlen < tls_record_length(record)) {
 		error_print();
 		return -1;
-	}
-
-	// 最高字节设置后强制打印记录原始数据
-	if (format >> 24) {
-		format_bytes(fp, format, indent, "Data", data, datalen);
-		fprintf(fp, "\n");
-		return 1;
 	}
 
 	switch (record[0]) {
@@ -1133,34 +1142,6 @@ int tls_record_print(FILE *fp, const uint8_t *record,  size_t recordlen, int for
 
 	fprintf(fp, "\n");
 	return 1;
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 }
 
 int tls_secrets_print(FILE *fp,
@@ -1171,6 +1152,9 @@ int tls_secrets_print(FILE *fp,
 	int format, int indent)
 {
 	// 应该检查一下key_block_len的值，判断是否支持，或者算法选择, 或者要求输入一个cipher_suite参数
+	// 这个函数不支持GCM模式套件，使用GCM模式时key_block_len更短
+	// 可以考虑通过key_block_len判断CBC还是GCM，或者在参数上增加cipher_suite
+	// FIXME: 如果增加了GCM套件，需要更新这个函数
 	format_bytes(stderr, format, indent, "pre_master_secret", pre_master_secret, pre_master_secret_len);
 	format_bytes(stderr, format, indent, "client_random", client_random, 32);
 	format_bytes(stderr, format, indent, "server_random", server_random, 32);
@@ -1182,3 +1166,24 @@ int tls_secrets_print(FILE *fp,
 	format_print(stderr, format, indent, "\n");
 	return 1;
 }
+
+int tls_encrypted_record_print(FILE *fp, const uint8_t *record,  size_t recordlen, int format, int indent)
+{
+	int protocol;
+
+	if (!fp || !record || recordlen < 5) {
+		error_print();
+		return -1;
+	}
+
+	protocol = tls_record_protocol(record);
+	format_print(fp, format, indent, "EncryptedRecord\n"); indent += 4;
+	format_print(fp, format, indent, "ContentType: %s (%d)\n", tls_record_type_name(record[0]), record[0]);
+	format_print(fp, format, indent, "Version: %s (%d.%d)\n", tls_protocol_name(protocol), protocol >> 8, protocol & 0xff);
+	format_print(fp, format, indent, "Length: %d\n", tls_record_data_length(record));
+	format_bytes(fp, format, indent, "EncryptedData", tls_record_data(record), tls_record_data_length(record));
+
+	fprintf(fp, "\n");
+	return 1;
+}
+

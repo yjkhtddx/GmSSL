@@ -1,4 +1,4 @@
-﻿/*
+/*
  *  Copyright 2014-2022 The GmSSL Project. All Rights Reserved.
  *
  *  Licensed under the Apache License, Version 2.0 (the License); you may
@@ -19,15 +19,11 @@
 #include <gmssl/rand.h>
 #include <gmssl/asn1.h>
 #include <gmssl/pkcs8.h>
-#include <gmssl/pbkdf2.h>
 #include <gmssl/error.h>
 
 
-extern const sm9_bn_t SM9_ZERO;
-extern const sm9_bn_t SM9_N;
-
 // generate h1 in [1, n-1]
-int sm9_hash1(sm9_bn_t h1, const char *id, size_t idlen, uint8_t hid)
+int sm9_z256_hash1(sm9_z256_t h1, const char *id, size_t idlen, uint8_t hid)
 {
 	SM3_CTX ctx;
 	uint8_t prefix[1] = { SM9_HASH1_PREFIX };
@@ -49,7 +45,7 @@ int sm9_hash1(sm9_bn_t h1, const char *id, size_t idlen, uint8_t hid)
 	sm3_update(&ctx, ct2, sizeof(ct2));
 	sm3_finish(&ctx, Ha + 32);
 
-	sm9_fn_from_hash(h1, Ha);
+	sm9_z256_modn_from_hash(h1, Ha);
 	return 1;
 }
 
@@ -59,8 +55,8 @@ int sm9_sign_master_key_to_der(const SM9_SIGN_MASTER_KEY *msk, uint8_t **out, si
 	uint8_t Ppubs[1 + 32 * 4];
 	size_t len = 0;
 
-	sm9_fn_to_bytes(msk->ks, ks);
-	sm9_twist_point_to_uncompressed_octets(&msk->Ppubs, Ppubs);
+	sm9_z256_to_bytes(msk->ks, ks);
+	sm9_z256_twist_point_to_uncompressed_octets(&msk->Ppubs, Ppubs);
 
 	if (asn1_integer_to_der(ks, sizeof(ks), NULL, &len) != 1
 		|| asn1_bit_octets_to_der(Ppubs, sizeof(Ppubs), NULL, &len) != 1
@@ -98,8 +94,12 @@ int sm9_sign_master_key_from_der(SM9_SIGN_MASTER_KEY *msk, const uint8_t **in, s
 		return -1;
 	}
 	memset(msk, 0, sizeof(*msk));
-	if (sm9_fn_from_bytes(msk->ks, ks) != 1
-		|| sm9_twist_point_from_uncompressed_octets(&msk->Ppubs, Ppubs) != 1) {
+	sm9_z256_from_bytes(msk->ks, ks);
+	if (sm9_z256_cmp(msk->ks, sm9_z256_order()) >= 0) {
+		error_print();
+		return -1;
+	}
+	if (sm9_z256_twist_point_from_uncompressed_octets(&msk->Ppubs, Ppubs) != 1) {
 		error_print();
 		return -1;
 	}
@@ -111,7 +111,7 @@ int sm9_sign_master_public_key_to_der(const SM9_SIGN_MASTER_KEY *mpk, uint8_t **
 	uint8_t Ppubs[1 + 32 * 4];
 	size_t len = 0;
 
-	sm9_twist_point_to_uncompressed_octets(&mpk->Ppubs, Ppubs);
+	sm9_z256_twist_point_to_uncompressed_octets(&mpk->Ppubs, Ppubs);
 	if (asn1_bit_octets_to_der(Ppubs, sizeof(Ppubs), NULL, &len) != 1
 		|| asn1_sequence_header_to_der(len, out, outlen) != 1
 		|| asn1_bit_octets_to_der(Ppubs, sizeof(Ppubs), out, outlen) != 1) {
@@ -140,7 +140,7 @@ int sm9_sign_master_public_key_from_der(SM9_SIGN_MASTER_KEY *mpk, const uint8_t 
 		return -1;
 	}
 	memset(mpk, 0, sizeof(*mpk));
-	if (sm9_twist_point_from_uncompressed_octets(&mpk->Ppubs, Ppubs) != 1) {
+	if (sm9_z256_twist_point_from_uncompressed_octets(&mpk->Ppubs, Ppubs) != 1) {
 		error_print();
 		return -1;
 	}
@@ -153,8 +153,8 @@ int sm9_sign_key_to_der(const SM9_SIGN_KEY *key, uint8_t **out, size_t *outlen)
 	uint8_t Ppubs[129];
 	size_t len = 0;
 
-	sm9_point_to_uncompressed_octets(&key->ds, ds);
-	sm9_twist_point_to_uncompressed_octets(&key->Ppubs, Ppubs);
+	sm9_z256_point_to_uncompressed_octets(&key->ds, ds);
+	sm9_z256_twist_point_to_uncompressed_octets(&key->Ppubs, Ppubs);
 
 	if (asn1_bit_octets_to_der(ds, sizeof(ds), NULL, &len) != 1
 		|| asn1_bit_octets_to_der(Ppubs, sizeof(Ppubs), NULL, &len) != 1
@@ -192,8 +192,8 @@ int sm9_sign_key_from_der(SM9_SIGN_KEY *key, const uint8_t **in, size_t *inlen)
 		return -1;
 	}
 	memset(key, 0, sizeof(*key));
-	if (sm9_point_from_uncompressed_octets(&key->ds, ds) != 1
-		|| sm9_twist_point_from_uncompressed_octets(&key->Ppubs, Ppubs) != 1) {
+	if (sm9_z256_point_from_uncompressed_octets(&key->ds, ds) != 1
+		|| sm9_z256_twist_point_from_uncompressed_octets(&key->Ppubs, Ppubs) != 1) {
 		error_print();
 		return -1;
 	}
@@ -206,8 +206,8 @@ int sm9_enc_master_key_to_der(const SM9_ENC_MASTER_KEY *msk, uint8_t **out, size
 	uint8_t Ppube[1 + 32 * 2];
 	size_t len = 0;
 
-	sm9_fn_to_bytes(msk->ke, ke);
-	sm9_point_to_uncompressed_octets(&msk->Ppube, Ppube);
+	sm9_z256_to_bytes(msk->ke, ke);
+	sm9_z256_point_to_uncompressed_octets(&msk->Ppube, Ppube);
 
 	if (asn1_integer_to_der(ke, sizeof(ke), NULL, &len) != 1
 		|| asn1_bit_octets_to_der(Ppube, sizeof(Ppube), NULL, &len) != 1
@@ -245,8 +245,13 @@ int sm9_enc_master_key_from_der(SM9_ENC_MASTER_KEY *msk, const uint8_t **in, siz
 		return -1;
 	}
 	memset(msk, 0, sizeof(*msk));
-	if (sm9_fn_from_bytes(msk->ke, ke) != 1
-		|| sm9_point_from_uncompressed_octets(&msk->Ppube, Ppube) != 1) {
+
+	sm9_z256_from_bytes(msk->ke, ke);
+	if (sm9_z256_cmp(msk->ke, sm9_z256_order()) >= 0) {
+		error_print();
+		return -1;
+	}
+	if (sm9_z256_point_from_uncompressed_octets(&msk->Ppube, Ppube) != 1) {
 		error_print();
 		return -1;
 	}
@@ -258,7 +263,7 @@ int sm9_enc_master_public_key_to_der(const SM9_ENC_MASTER_KEY *mpk, uint8_t **ou
 	uint8_t Ppube[1 + 32 * 2];
 	size_t len = 0;
 
-	sm9_point_to_uncompressed_octets(&mpk->Ppube, Ppube);
+	sm9_z256_point_to_uncompressed_octets(&mpk->Ppube, Ppube);
 
 	if (asn1_bit_octets_to_der(Ppube, sizeof(Ppube), NULL, &len) != 1
 		|| asn1_sequence_header_to_der(len, out, outlen) != 1
@@ -288,7 +293,7 @@ int sm9_enc_master_public_key_from_der(SM9_ENC_MASTER_KEY *mpk, const uint8_t **
 		return -1;
 	}
 	memset(mpk, 0, sizeof(*mpk));
-	if (sm9_point_from_uncompressed_octets(&mpk->Ppube, Ppube) != 1) {
+	if (sm9_z256_point_from_uncompressed_octets(&mpk->Ppube, Ppube) != 1) {
 		error_print();
 		return -1;
 	}
@@ -301,8 +306,8 @@ int sm9_enc_key_to_der(const SM9_ENC_KEY *key, uint8_t **out, size_t *outlen)
 	uint8_t Ppube[65];
 	size_t len = 0;
 
-	sm9_twist_point_to_uncompressed_octets(&key->de, de);
-	sm9_point_to_uncompressed_octets(&key->Ppube, Ppube);
+	sm9_z256_twist_point_to_uncompressed_octets(&key->de, de);
+	sm9_z256_point_to_uncompressed_octets(&key->Ppube, Ppube);
 
 	if (asn1_bit_octets_to_der(de, sizeof(de), NULL, &len) != 1
 		|| asn1_bit_octets_to_der(Ppube, sizeof(Ppube), NULL, &len) != 1
@@ -340,8 +345,8 @@ int sm9_enc_key_from_der(SM9_ENC_KEY *key, const uint8_t **in, size_t *inlen)
 		return -1;
 	}
 	memset(key, 0, sizeof(*key));
-	if (sm9_twist_point_from_uncompressed_octets(&key->de, de) != 1
-		|| sm9_point_from_uncompressed_octets(&key->Ppube, Ppube) != 1) {
+	if (sm9_z256_twist_point_from_uncompressed_octets(&key->de, de) != 1
+		|| sm9_z256_point_from_uncompressed_octets(&key->Ppube, Ppube) != 1) {
 		error_print();
 		return -1;
 	}
@@ -355,46 +360,46 @@ int sm9_sign_master_key_generate(SM9_SIGN_MASTER_KEY *msk)
 		return -1;
 	}
 	// k = rand(1, n-1)
-	if (sm9_fn_rand(msk->ks) != 1) {
+	if (sm9_z256_rand_range(msk->ks, sm9_z256_order()) != 1) {
 		error_print();
 		return -1;
 	}
 	// Ppubs = k * P2 in E'(F_p^2)
-	sm9_twist_point_mul_generator(&msk->Ppubs, msk->ks);
+	sm9_z256_twist_point_mul_generator(&msk->Ppubs, msk->ks);
 	return 1;
 }
 
 int sm9_enc_master_key_generate(SM9_ENC_MASTER_KEY *msk)
 {
 	// k = rand(1, n-1)
-	if (sm9_fn_rand(msk->ke) != 1) {
+	if (sm9_z256_rand_range(msk->ke, sm9_z256_order()) != 1) {
 		error_print();
 		return -1;
 	}
 	// Ppube = ke * P1 in E(F_p)
-	sm9_point_mul_generator(&msk->Ppube, msk->ke);
+	sm9_z256_point_mul_generator(&msk->Ppube, msk->ke);
 	return 1;
 }
 
 int sm9_sign_master_key_extract_key(SM9_SIGN_MASTER_KEY *msk, const char *id, size_t idlen, SM9_SIGN_KEY *key)
 {
-	sm9_fn_t t;
+	sm9_z256_t t;
 
 	// t1 = H1(ID || hid, N) + ks
-	sm9_hash1(t, id, idlen, SM9_HID_SIGN);
-	sm9_fn_add(t, t, msk->ks);
-	if (sm9_fn_is_zero(t)) {
+	sm9_z256_hash1(t, id, idlen, SM9_HID_SIGN);
+	sm9_z256_modn_add(t, t, msk->ks);
+	if (sm9_z256_is_zero(t)) {
 		// 这是一个严重问题，意味着整个msk都需要作废了
 		error_print();
 		return -1;
 	}
 
 	// t2 = ks * t1^-1
-	sm9_fn_inv(t, t);
-	sm9_fn_mul(t, t, msk->ks);
+	sm9_z256_modn_inv(t, t);
+	sm9_z256_modn_mul(t, t, msk->ks);
 
 	// ds = t2 * P1
-	sm9_point_mul_generator(&key->ds, t);
+	sm9_z256_point_mul_generator(&key->ds, t);
 	key->Ppubs = msk->Ppubs;
 
 	return 1;
@@ -403,22 +408,46 @@ int sm9_sign_master_key_extract_key(SM9_SIGN_MASTER_KEY *msk, const char *id, si
 int sm9_enc_master_key_extract_key(SM9_ENC_MASTER_KEY *msk, const char *id, size_t idlen,
 	SM9_ENC_KEY *key)
 {
-	sm9_fn_t t;
+	sm9_z256_t t;
 
 	// t1 = H1(ID || hid, N) + ke
-	sm9_hash1(t, id, idlen, SM9_HID_ENC);
-	sm9_fn_add(t, t, msk->ke);
-	if (sm9_fn_is_zero(t)) {
+	sm9_z256_hash1(t, id, idlen, SM9_HID_ENC);
+	sm9_z256_modn_add(t, t, msk->ke);
+	if (sm9_z256_is_zero(t)) {
 		error_print();
 		return -1;
 	}
 
 	// t2 = ke * t1^-1
-	sm9_fn_inv(t, t);
-	sm9_fn_mul(t, t, msk->ke);
+	sm9_z256_modn_inv(t, t);
+	sm9_z256_modn_mul(t, t, msk->ke);
 
 	// de = t2 * P2
-	sm9_twist_point_mul_generator(&key->de, t);
+	sm9_z256_twist_point_mul_generator(&key->de, t);
+	key->Ppube = msk->Ppube;
+
+	return 1;
+}
+
+int sm9_exch_master_key_extract_key(SM9_EXCH_MASTER_KEY *msk, const char *id, size_t idlen,
+	SM9_EXCH_KEY *key)
+{
+	sm9_z256_t t;
+
+	// t1 = H1(ID || hid, N) + ke
+	sm9_z256_hash1(t, id, idlen, SM9_HID_EXCH);
+	sm9_z256_modn_add(t, t, msk->ke);
+	if (sm9_z256_is_zero(t)) {
+		error_print();
+		return -1;
+	}
+
+	// t2 = ke * t1^-1
+	sm9_z256_modn_inv(t, t);
+	sm9_z256_modn_mul(t, t, msk->ke);
+
+	// de = t2 * P2
+	sm9_z256_twist_point_mul_generator(&key->de, t);
 	key->Ppube = msk->Ppube;
 
 	return 1;
@@ -597,7 +626,7 @@ static int sm9_private_key_info_encrypt_to_der(int alg, int params, const uint8_
 	if (sm9_private_key_info_to_der(alg, params, prikey, prikey_len, &p, &pkey_info_len) != 1
 		|| rand_bytes(salt, sizeof(salt)) != 1
 		|| rand_bytes(iv, sizeof(iv)) != 1
-		|| pbkdf2_hmac_sm3_genkey(pass, strlen(pass), salt, sizeof(salt), iter, sizeof(key), key) != 1) {
+		|| sm3_pbkdf2(pass, strlen(pass), salt, sizeof(salt), iter, sizeof(key), key) != 1) {
 		error_print();
 		goto end;
 	}
@@ -650,7 +679,7 @@ static int sm9_private_key_info_decrypt_from_der(int *alg, int *params, uint8_t 
 		error_print();
 		return -1;
 	}
-	if (pbkdf2_genkey(DIGEST_sm3(), pass, strlen(pass), salt, saltlen, iter, sizeof(key), key) != 1) {
+	if (sm3_pbkdf2(pass, strlen(pass), salt, saltlen, iter, sizeof(key), key) != 1) {
 		error_print();
 		goto end;
 	}
@@ -1051,8 +1080,8 @@ int sm9_sign_master_key_print(FILE *fp, int fmt, int ind, const char *label, con
 {
 	format_print(fp, fmt, ind, "%s\n", label);
 	ind += 4;
-	sm9_fn_print(fp, fmt, ind, "ks", msk->ks);
-	sm9_twist_point_print(fp, fmt, ind, "Ppubs", &msk->Ppubs);
+	sm9_z256_print(fp, fmt, ind, "ks", msk->ks);
+	sm9_z256_twist_point_print(fp, fmt, ind, "Ppubs", &msk->Ppubs);
 	return 1;
 }
 
@@ -1060,7 +1089,7 @@ int sm9_sign_master_public_key_print(FILE *fp, int fmt, int ind, const char *lab
 {
 	format_print(fp, fmt, ind, "%s\n", label);
 	ind += 4;
-	sm9_twist_point_print(fp, fmt, ind, "Ppubs", &mpk->Ppubs);
+	sm9_z256_twist_point_print(fp, fmt, ind, "Ppubs", &mpk->Ppubs);
 	return 1;
 }
 
@@ -1068,8 +1097,8 @@ int sm9_sign_key_print(FILE *fp, int fmt, int ind, const char *label, const SM9_
 {
 	format_print(fp, fmt, ind, "%s\n", label);
 	ind += 4;
-	sm9_point_print(fp, fmt, ind, "ds", &key->ds);
-	sm9_twist_point_print(fp, fmt, ind, "Ppubs", &key->Ppubs);
+	sm9_z256_point_print(fp, fmt, ind, "ds", &key->ds);
+	sm9_z256_twist_point_print(fp, fmt, ind, "Ppubs", &key->Ppubs);
 	return 1;
 }
 
@@ -1077,8 +1106,8 @@ int sm9_enc_master_key_print(FILE *fp, int fmt, int ind, const char *label, cons
 {
 	format_print(fp, fmt, ind, "%s\n", label);
 	ind += 4;
-	sm9_fn_print(fp, fmt, ind, "ke", msk->ke);
-	sm9_point_print(fp, fmt, ind, "Ppube", &msk->Ppube);
+	sm9_z256_print(fp, fmt, ind, "ke", msk->ke);
+	sm9_z256_point_print(fp, fmt, ind, "Ppube", &msk->Ppube);
 	return 1;
 }
 
@@ -1086,7 +1115,7 @@ int sm9_enc_master_public_key_print(FILE *fp, int fmt, int ind, const char *labe
 {
 	format_print(fp, fmt, ind, "%s\n", label);
 	ind += 4;
-	sm9_point_print(fp, fmt, ind, "Ppube", &mpk->Ppube);
+	sm9_z256_point_print(fp, fmt, ind, "Ppube", &mpk->Ppube);
 	return 1;
 }
 
@@ -1094,8 +1123,8 @@ int sm9_enc_key_print(FILE *fp, int fmt, int ind, const char *label, const SM9_E
 {
 	format_print(fp, fmt, ind, "%s\n", label);
 	ind += 4;
-	sm9_twist_point_print(fp, fmt, ind, "de", &key->de);
-	sm9_point_print(fp, fmt, ind, "Ppube", &key->Ppube);
+	sm9_z256_twist_point_print(fp, fmt, ind, "de", &key->de);
+	sm9_z256_point_print(fp, fmt, ind, "Ppube", &key->Ppube);
 	return 1;
 }
 

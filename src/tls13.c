@@ -1,5 +1,5 @@
 /*
- *  Copyright 2014-2023 The GmSSL Project. All Rights Reserved.
+ *  Copyright 2014-2024 The GmSSL Project. All Rights Reserved.
  *
  *  Licensed under the Apache License, Version 2.0 (the License); you may
  *  not use this file except in compliance with the License.
@@ -22,7 +22,6 @@
 #include <gmssl/pem.h>
 #include <gmssl/tls.h>
 #include <gmssl/digest.h>
-#include <gmssl/gcm.h>
 #include <gmssl/hmac.h>
 #include <gmssl/hkdf.h>
 #include <gmssl/mem.h>
@@ -44,6 +43,53 @@ static int tls13_client_hello_exts[] = {
 	TLS_extension_supported_versions,
 	TLS_extension_padding,
 };
+
+// FIXME: remove block_cipher.h
+int gcm_encrypt(const BLOCK_CIPHER_KEY *key, const uint8_t *iv, size_t ivlen,
+	const uint8_t *aad, size_t aadlen, const uint8_t *in, size_t inlen,
+	uint8_t *out, size_t taglen, uint8_t *tag)
+{
+	if (key->cipher == BLOCK_CIPHER_sm4()) {
+		if (sm4_gcm_encrypt(&(key->u.sm4_key), iv, ivlen, aad, aadlen,  in, inlen, out, taglen, tag) != 1) {
+			error_print();
+			return -1;
+		}
+#ifdef ENABLE_AES
+	} else if (key->cipher == BLOCK_CIPHER_aes128()) {
+		if (aes_gcm_encrypt(&(key->u.aes_key), iv, ivlen, aad, aadlen,  in, inlen, out, taglen, tag) != 1) {
+			error_print();
+			return -1;
+		}
+#endif
+	} else {
+		error_print();
+		return -1;
+	}
+	return 1;
+}
+
+int gcm_decrypt(const BLOCK_CIPHER_KEY *key, const uint8_t *iv, size_t ivlen,
+	const uint8_t *aad, size_t aadlen, const uint8_t *in, size_t inlen,
+	const uint8_t *tag, size_t taglen, uint8_t *out)
+{
+	if (key->cipher == BLOCK_CIPHER_sm4()) {
+		if (sm4_gcm_decrypt(&(key->u.sm4_key), iv, ivlen, aad, aadlen,  in, inlen, tag, taglen, out) != 1) {
+			error_print();
+			return -1;
+		}
+#ifdef ENABLE_AES
+	} else if (key->cipher == BLOCK_CIPHER_aes128()) {
+		if (aes_gcm_decrypt(&(key->u.aes_key), iv, ivlen, aad, aadlen,  in, inlen, tag, taglen, out) != 1) {
+			error_print();
+			return -1;
+		}
+#endif
+	} else {
+		error_print();
+		return -1;
+	}
+	return 1;
+}
 
 
 /*
@@ -564,7 +610,7 @@ Handshakes
 */
 
 int tls13_client_hello_exts_set(uint8_t *exts, size_t *extslen, size_t maxlen,
-	const SM2_POINT *client_ecdhe_public)
+	const SM2_Z256_POINT *client_ecdhe_public)
 {
 	int protocols[] = { TLS_protocol_tls13 };
 	int supported_groups[] = { TLS_curve_sm2p256v1 };
@@ -600,7 +646,7 @@ int tls13_client_hello_exts_set(uint8_t *exts, size_t *extslen, size_t maxlen,
 }
 
 int tls13_process_client_hello_exts(const uint8_t *exts, size_t extslen,
-	const SM2_KEY *server_ecdhe_key, SM2_POINT *client_ecdhe_public,
+	const SM2_KEY *server_ecdhe_key, SM2_Z256_POINT *client_ecdhe_public,
 	uint8_t *server_exts, size_t *server_exts_len, size_t server_exts_maxlen)
 {
 	size_t len = 0;
@@ -661,7 +707,7 @@ int tls13_process_client_hello_exts(const uint8_t *exts, size_t extslen,
 	return 1;
 }
 
-int tls_client_key_shares_from_bytes(SM2_POINT *sm2_point, const uint8_t **in, size_t *inlen)
+int tls_client_key_shares_from_bytes(SM2_Z256_POINT *sm2_point, const uint8_t **in, size_t *inlen)
 {
 	const uint8_t *key_shares;
 	size_t key_shares_len;
@@ -683,7 +729,7 @@ int tls_client_key_shares_from_bytes(SM2_POINT *sm2_point, const uint8_t **in, s
 
 		switch (group) {
 		case TLS_curve_sm2p256v1:
-			sm2_point_from_octets(sm2_point, key_exch, key_exch_len);
+			sm2_z256_point_from_octets(sm2_point, key_exch, key_exch_len);
 			break;
 		default:
 			error_print();
@@ -695,7 +741,7 @@ int tls_client_key_shares_from_bytes(SM2_POINT *sm2_point, const uint8_t **in, s
 }
 
 // 这个函数不是太正确，应该也是一个process
-int tls13_server_hello_extensions_get(const uint8_t *exts, size_t extslen, SM2_POINT *sm2_point)
+int tls13_server_hello_extensions_get(const uint8_t *exts, size_t extslen, SM2_Z256_POINT *sm2_point)
 {
 	uint16_t version;
 	while (extslen) {
@@ -1459,7 +1505,7 @@ int tls13_do_connect(TLS_CONNECT *conn)
 	size_t server_verify_data_len;
 
 	SM2_KEY client_ecdhe;
-	SM2_POINT server_ecdhe_public;
+	SM2_Z256_POINT server_ecdhe_public;
 	SM2_KEY server_sign_key;
 
 	const DIGEST *digest = DIGEST_sm3();
@@ -1887,7 +1933,10 @@ int tls13_do_connect(TLS_CONNECT *conn)
 	format_bytes(stderr, 0, 4, "client_write_iv", conn->client_write_iv, 12);
 	format_print(stderr, 0, 0, "\n");
 	*/
-	fprintf(stderr, "Connection established\n");
+
+	if (!conn->quiet)
+		fprintf(stderr, "Connection established\n");
+
 	ret = 1;
 
 end:
@@ -1932,7 +1981,7 @@ int tls13_do_accept(TLS_CONNECT *conn)
 	size_t server_exts_len;
 
 	SM2_KEY server_ecdhe;
-	SM2_POINT client_ecdhe_public;
+	SM2_Z256_POINT client_ecdhe_public;
 	SM2_KEY client_sign_key;
 	const BLOCK_CIPHER *cipher;
 	const DIGEST *digest;
@@ -2354,7 +2403,9 @@ int tls13_do_accept(TLS_CONNECT *conn)
 	format_print(stderr, 0, 0, "\n");
 	*/
 
-	fprintf(stderr, "Connection Established!\n\n");
+	if (!conn->quiet)
+		fprintf(stderr, "Connection Established!\n\n");
+
 	ret = 1;
 end:
 	gmssl_secure_clear(&server_ecdhe, sizeof(server_ecdhe));
